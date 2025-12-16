@@ -63,7 +63,7 @@ QUERYING GUIDE:
 
 FUNCTION TRACE STRUCTURE:
 {
-  "name": "function name or <unknown_XXXX> for unnamed",
+  "name": "function name or sub_XXXX for unnamed (address-based)",
   "entry_pc": <program counter at entry>,
   "call_sites": [<list of PCs that call this function>],
   "instructions": [
@@ -342,7 +342,7 @@ impl QueryableTrace {
         let func_name = frame
             .symbol_name
             .clone()
-            .unwrap_or_else(|| format!("<func_{:04x}>", frame.start_pc));
+            .unwrap_or_else(|| format!("sub_{:x}", frame.start_pc));
 
         all_functions.push(func_name.clone());
 
@@ -425,7 +425,7 @@ impl QueryableTrace {
                     let target = call
                         .target_function
                         .clone()
-                        .unwrap_or_else(|| format!("<func_{:04x}>", call.target_pc));
+                        .unwrap_or_else(|| format!("sub_{:x}", call.target_pc));
                     child_calls.push(target);
                 }
                 TraceEvent::FunctionReturn(_) => {}
@@ -437,7 +437,7 @@ impl QueryableTrace {
             let sub_name = sub_frame
                 .symbol_name
                 .clone()
-                .unwrap_or_else(|| format!("<func_{:04x}>", sub_frame.start_pc));
+                .unwrap_or_else(|| format!("sub_{:x}", sub_frame.start_pc));
             child_calls.push(sub_name);
 
             Self::process_frame(
