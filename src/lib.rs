@@ -44,6 +44,8 @@ pub mod program;
 pub mod static_analysis;
 pub mod verifier;
 pub mod vm;
+#[cfg(feature = "semantic-tracer")]
+pub mod tracer;
 #[cfg(all(feature = "jit", not(target_os = "windows"), target_arch = "x86_64"))]
 mod x86;
 

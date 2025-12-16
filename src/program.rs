@@ -40,6 +40,13 @@ impl SBPFVersion {
         self != SBPFVersion::V1 && self != SBPFVersion::V2
     }
 
+    /// Enable SIMD-0166: SBPF dynamic stack frames
+    ///
+    /// Alias for compatibility - returns true if dynamic stack frames are enabled.
+    pub fn dynamic_stack_frames(self) -> bool {
+        self.manual_stack_frame_bump() || self.automatic_stack_frame_bump()
+    }
+
     /// Enable SIMD-0174: SBPF arithmetics improvements
     pub fn enable_pqr(self) -> bool {
         self == SBPFVersion::V2
