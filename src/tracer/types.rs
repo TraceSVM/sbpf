@@ -20,6 +20,8 @@ pub struct TraceContext {
     pub total_compute_units: u64,
     /// Final execution result.
     pub result: TraceResult,
+    /// Text section virtual address (for converting PC to ELF addresses).
+    pub text_section_vaddr: u64,
     /// Control flow graph analysis (if enabled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub control_flow_graph: Option<super::cfg::ControlFlowGraph>,

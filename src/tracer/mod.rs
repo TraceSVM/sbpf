@@ -245,11 +245,15 @@ impl Tracer {
         // Finalize dataflow if enabled
         let dataflow = self.dataflow_analyzer.take().map(|analyzer| analyzer.finalize());
 
+        // Get text section vaddr for address calculation
+        let (text_section_vaddr, _) = executable.get_text_bytes();
+
         let trace_context = TraceContext {
             program_id: self.program_id.clone(),
             execution_tree: std::mem::take(&mut self.root_frames),
             total_compute_units: instruction_count,
             result,
+            text_section_vaddr,
             control_flow_graph,
             dataflow,
         };

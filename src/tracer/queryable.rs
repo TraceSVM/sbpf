@@ -11,8 +11,15 @@
 use super::types::*;
 use super::cfg::ControlFlowGraph;
 use super::dataflow::DataFlowState;
+use crate::ebpf::INSN_SIZE;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+
+/// Convert a program counter (instruction index) to an ELF virtual address.
+/// ELF address = text_section_vaddr + (pc * INSN_SIZE)
+fn pc_to_elf_addr(pc: u64, text_section_vaddr: u64) -> u64 {
+    text_section_vaddr + (pc * INSN_SIZE as u64)
+}
 
 /// Schema description for AI systems to understand the trace format.
 pub const SCHEMA_DESCRIPTION: &str = r#"
@@ -285,6 +292,7 @@ impl QueryableTrace {
                 &mut accounts_accessed,
                 None,
                 include_instructions,
+                ctx.text_section_vaddr,
             );
         }
 
@@ -338,11 +346,12 @@ impl QueryableTrace {
         accounts_accessed: &mut Vec<u64>,
         parent_call_site: Option<u64>,
         include_instructions: bool,
+        text_section_vaddr: u64,
     ) {
         let func_name = frame
             .symbol_name
             .clone()
-            .unwrap_or_else(|| format!("sub_{:x}", frame.start_pc));
+            .unwrap_or_else(|| format!("sub_{:x}", pc_to_elf_addr(frame.start_pc, text_section_vaddr)));
 
         all_functions.push(func_name.clone());
 
@@ -425,7 +434,7 @@ impl QueryableTrace {
                     let target = call
                         .target_function
                         .clone()
-                        .unwrap_or_else(|| format!("sub_{:x}", call.target_pc));
+                        .unwrap_or_else(|| format!("sub_{:x}", pc_to_elf_addr(call.target_pc, text_section_vaddr)));
                     child_calls.push(target);
                 }
                 TraceEvent::FunctionReturn(_) => {}
@@ -437,7 +446,7 @@ impl QueryableTrace {
             let sub_name = sub_frame
                 .symbol_name
                 .clone()
-                .unwrap_or_else(|| format!("sub_{:x}", sub_frame.start_pc));
+                .unwrap_or_else(|| format!("sub_{:x}", pc_to_elf_addr(sub_frame.start_pc, text_section_vaddr)));
             child_calls.push(sub_name);
 
             Self::process_frame(
@@ -450,6 +459,7 @@ impl QueryableTrace {
                 accounts_accessed,
                 Some(frame.start_pc),
                 include_instructions,
+                text_section_vaddr,
             );
         }
 
@@ -629,6 +639,7 @@ mod tests {
             execution_tree: vec![],
             total_compute_units: 0,
             result: TraceResult::Success { return_value: 0 },
+            text_section_vaddr: 0x100000000,
             control_flow_graph: None,
             dataflow: None,
         };
