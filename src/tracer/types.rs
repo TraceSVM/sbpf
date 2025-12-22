@@ -9,6 +9,17 @@ use std::collections::HashMap;
 /// Maximum bytes to capture for memory values before truncation.
 pub const MAX_MEMORY_VALUE_BYTES: usize = 64;
 
+/// Register change event capturing before/after values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterChange {
+    /// Register number (0-10 for r0-r10, 11 for pc).
+    pub register: u8,
+    /// Value before instruction execution.
+    pub value_before: u64,
+    /// Value after instruction execution.
+    pub value_after: u64,
+}
+
 /// Root trace context containing the full execution trace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceContext {
@@ -106,10 +117,10 @@ pub struct InstructionEvent {
     pub opcode: u8,
     /// Disassembled mnemonic (e.g., "add64 r1, r2").
     pub mnemonic: String,
-    /// Register changes: register name -> new value.
+    /// Register changes with before/after values.
     /// Only registers that changed are included.
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub regs_diff: HashMap<String, u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub register_changes: Vec<RegisterChange>,
     /// Compute units consumed by this instruction.
     pub compute_units: u64,
 }

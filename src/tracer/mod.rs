@@ -327,15 +327,15 @@ impl Tracer {
             executable.get_sbpf_version(),
         );
 
-        // Compute register diff
-        let regs_diff = self.compute_reg_diff(&pre_regs, &post_regs);
+        // Compute register changes with before/after values
+        let register_changes = self.compute_reg_diff(&pre_regs, &post_regs);
 
         // Record instruction event
         let insn_event = InstructionEvent {
             pc,
             opcode,
             mnemonic,
-            regs_diff,
+            register_changes,
             compute_units: cu_consumed,
         };
 
@@ -444,18 +444,19 @@ impl Tracer {
         continue_execution
     }
 
-    /// Compute register differences.
-    fn compute_reg_diff(&self, pre: &[u64; 12], post: &[u64; 12]) -> HashMap<String, u64> {
-        let mut diff = HashMap::new();
-        let reg_names = [
-            "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "pc",
-        ];
-        for (i, name) in reg_names.iter().enumerate() {
+    /// Compute register differences with before/after values.
+    fn compute_reg_diff(&self, pre: &[u64; 12], post: &[u64; 12]) -> Vec<RegisterChange> {
+        let mut changes = Vec::new();
+        for i in 0..12 {
             if pre[i] != post[i] {
-                diff.insert(name.to_string(), post[i]);
+                changes.push(RegisterChange {
+                    register: i as u8,
+                    value_before: pre[i],
+                    value_after: post[i],
+                });
             }
         }
-        diff
+        changes
     }
 
     /// Record memory access event for load/store instructions.
@@ -652,15 +653,15 @@ mod tests {
 
     #[test]
     fn test_compute_reg_diff() {
-        let tracer = Tracer::new(HashMap::new(), None);
+        let tracer = Tracer::new(std::collections::HashMap::new(), None);
         let pre = [0u64; 12];
         let mut post = [0u64; 12];
         post[0] = 42; // r0 changed
         post[5] = 100; // r5 changed
 
-        let diff = tracer.compute_reg_diff(&pre, &post);
-        assert_eq!(diff.get("r0"), Some(&42u64));
-        assert_eq!(diff.get("r5"), Some(&100u64));
-        assert_eq!(diff.get("r1"), None); // unchanged
+        let changes = tracer.compute_reg_diff(&pre, &post);
+        assert!(changes.iter().any(|rc| rc.register == 0 && rc.value_before == 0 && rc.value_after == 42));
+        assert!(changes.iter().any(|rc| rc.register == 5 && rc.value_before == 0 && rc.value_after == 100));
+        assert!(!changes.iter().any(|rc| rc.register == 1)); // unchanged
     }
 }
