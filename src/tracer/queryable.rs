@@ -8,7 +8,10 @@
 //! - High-level summaries before detailed data
 //! - Separated sections that can be read independently
 
-use super::types::*;
+use super::types::{
+    MemoryAccessEvent, MemoryAccessType, MemoryRegionType, RegisterChange, TraceContext,
+    TracedCallFrame, TraceEvent, TraceResult,
+};
 use super::cfg::ControlFlowGraph;
 use super::dataflow::DataFlowState;
 use crate::ebpf::INSN_SIZE;
@@ -224,6 +227,9 @@ pub struct SimplifiedInstruction {
     /// High-level semantic description (for important instructions).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic: Option<String>,
+    /// Register changes with before/after values.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub register_changes: Vec<RegisterChange>,
 }
 
 /// Memory access with semantic context.
@@ -391,6 +397,7 @@ impl QueryableTrace {
                             pc: insn.pc,
                             mnemonic: insn.mnemonic.clone(),
                             semantic,
+                            register_changes: insn.register_changes.clone(),
                         });
                     }
                 }

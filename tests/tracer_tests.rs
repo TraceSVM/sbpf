@@ -113,15 +113,15 @@ fn test_register_diff_tracking() {
 
     let root_frame = &trace.execution_tree[0];
 
-    // Find mov64 r1, 100 instruction and check its register diff
-    let has_r1_diff = root_frame.events.iter().any(|e| {
+    // Find mov64 r1, 100 instruction and check its register changes
+    let has_r1_change = root_frame.events.iter().any(|e| {
         if let TraceEvent::Instruction(insn) = e {
-            insn.regs_diff.get("r1") == Some(&100)
+            insn.register_changes.iter().any(|rc| rc.register == 1 && rc.value_after == 100)
         } else {
             false
         }
     });
-    assert!(has_r1_diff, "Should track r1 change to 100");
+    assert!(has_r1_change, "Should track r1 change to 100");
 }
 
 #[test]
