@@ -108,9 +108,28 @@ pub enum TraceEvent {
     FunctionReturn(FunctionReturnEvent),
 }
 
+/// Information about an operand to an instruction.
+/// Used for explicit dataflow tracing without lossy reconstruction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperandInfo {
+    /// The operand value at time of instruction execution.
+    pub value: u64,
+    /// Source register number (None if immediate).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_reg: Option<u8>,
+    /// DefId that produced this value (if register and dataflow enabled).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_def: Option<super::dataflow::DefId>,
+    /// Whether this operand is an immediate value.
+    pub is_immediate: bool,
+}
+
 /// Instruction execution details.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstructionEvent {
+    /// Execution sequence number within this program invocation.
+    /// Monotonically increasing, resets on CPI calls.
+    pub exec_seq: u64,
     /// Program counter.
     pub pc: u64,
     /// Raw opcode byte.
@@ -123,6 +142,15 @@ pub struct InstructionEvent {
     pub register_changes: Vec<RegisterChange>,
     /// Compute units consumed by this instruction.
     pub compute_units: u64,
+    /// First operand information (typically dst register value before execution).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operand_1: Option<OperandInfo>,
+    /// Second operand information (src register or immediate).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operand_2: Option<OperandInfo>,
+    /// Immediate value if present in instruction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub immediate: Option<i64>,
 }
 
 /// Memory region classification for semantic understanding.

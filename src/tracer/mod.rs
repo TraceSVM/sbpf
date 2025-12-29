@@ -65,6 +65,9 @@ pub struct Tracer {
     cfg_builder: Option<CfgBuilder>,
     /// Optional data flow analyzer.
     dataflow_analyzer: Option<DataFlowAnalyzer>,
+    /// Execution sequence counter for instruction ordering.
+    /// Monotonically increasing within a program invocation, resets on CPI.
+    exec_seq_counter: u64,
 }
 
 impl Tracer {
@@ -79,6 +82,7 @@ impl Tracer {
             program_id,
             cfg_builder: None,
             dataflow_analyzer: None,
+            exec_seq_counter: 0,
         }
     }
 
@@ -170,6 +174,7 @@ impl Tracer {
         // Reset tracer state
         self.frame_stack.clear();
         self.root_frames.clear();
+        self.exec_seq_counter = 0;
 
         // Initialize VM state (similar to execute_program)
         let initial_pc = executable.get_entrypoint_instruction_offset() as u64;
@@ -330,13 +335,24 @@ impl Tracer {
         // Compute register changes with before/after values
         let register_changes = self.compute_reg_diff(&pre_regs, &post_regs);
 
+        // Increment execution sequence counter
+        self.exec_seq_counter += 1;
+        let exec_seq = self.exec_seq_counter;
+
+        // Extract operand information for dataflow tracing
+        let (operand_1, operand_2, immediate) = self.extract_operands(&insn, opcode, &pre_regs);
+
         // Record instruction event
         let insn_event = InstructionEvent {
+            exec_seq,
             pc,
             opcode,
             mnemonic,
             register_changes,
             compute_units: cu_consumed,
+            operand_1,
+            operand_2,
+            immediate,
         };
 
         if let Some(current_frame) = self.frame_stack.last_mut() {
@@ -362,6 +378,7 @@ impl Tracer {
                 .map(|(r, a, s)| (Some(r), Some(a), Some(s)))
                 .unwrap_or((None, None, None));
             analyzer.analyze_instruction(
+                exec_seq,
                 pc,
                 opcode,
                 &insn,
@@ -457,6 +474,175 @@ impl Tracer {
             }
         }
         changes
+    }
+
+    /// Extract operand information for an instruction.
+    /// Returns (operand_1, operand_2, immediate) where:
+    /// - operand_1 is typically the dst register's value before execution
+    /// - operand_2 is the src register's value (for reg-reg ops) or None
+    /// - immediate is the immediate value if the instruction uses one
+    fn extract_operands(
+        &self,
+        insn: &Insn,
+        opcode: u8,
+        pre_regs: &[u64; 12],
+    ) -> (Option<OperandInfo>, Option<OperandInfo>, Option<i64>) {
+        // Get DefIds for registers if dataflow is enabled
+        let dst_def = self.dataflow_analyzer.as_ref()
+            .and_then(|a| a.state.get_reg_def(insn.dst));
+        let src_def = self.dataflow_analyzer.as_ref()
+            .and_then(|a| a.state.get_reg_def(insn.src));
+
+        // Classify instruction type by opcode
+        match opcode {
+            // ALU operations with immediate: dst op= imm
+            ebpf::ADD32_IMM | ebpf::ADD64_IMM |
+            ebpf::SUB32_IMM | ebpf::SUB64_IMM |
+            ebpf::MUL32_IMM | ebpf::MUL64_IMM |
+            ebpf::DIV32_IMM | ebpf::DIV64_IMM |
+            ebpf::MOD32_IMM | ebpf::MOD64_IMM |
+            ebpf::OR32_IMM | ebpf::OR64_IMM |
+            ebpf::AND32_IMM | ebpf::AND64_IMM |
+            ebpf::XOR32_IMM | ebpf::XOR64_IMM |
+            ebpf::LSH32_IMM | ebpf::LSH64_IMM |
+            ebpf::RSH32_IMM | ebpf::RSH64_IMM |
+            ebpf::ARSH32_IMM | ebpf::ARSH64_IMM => {
+                let op1 = Some(OperandInfo {
+                    value: pre_regs[insn.dst as usize],
+                    source_reg: Some(insn.dst),
+                    source_def: dst_def,
+                    is_immediate: false,
+                });
+                let op2 = Some(OperandInfo {
+                    value: insn.imm as u64,
+                    source_reg: None,
+                    source_def: None,
+                    is_immediate: true,
+                });
+                (op1, op2, Some(insn.imm))
+            }
+
+            // ALU operations with register: dst op= src
+            ebpf::ADD32_REG | ebpf::ADD64_REG |
+            ebpf::SUB32_REG | ebpf::SUB64_REG |
+            ebpf::MUL32_REG | ebpf::MUL64_REG |
+            ebpf::DIV32_REG | ebpf::DIV64_REG |
+            ebpf::MOD32_REG | ebpf::MOD64_REG |
+            ebpf::OR32_REG | ebpf::OR64_REG |
+            ebpf::AND32_REG | ebpf::AND64_REG |
+            ebpf::XOR32_REG | ebpf::XOR64_REG |
+            ebpf::LSH32_REG | ebpf::LSH64_REG |
+            ebpf::RSH32_REG | ebpf::RSH64_REG |
+            ebpf::ARSH32_REG | ebpf::ARSH64_REG => {
+                let op1 = Some(OperandInfo {
+                    value: pre_regs[insn.dst as usize],
+                    source_reg: Some(insn.dst),
+                    source_def: dst_def,
+                    is_immediate: false,
+                });
+                let op2 = Some(OperandInfo {
+                    value: pre_regs[insn.src as usize],
+                    source_reg: Some(insn.src),
+                    source_def: src_def,
+                    is_immediate: false,
+                });
+                (op1, op2, None)
+            }
+
+            // MOV immediate
+            ebpf::MOV32_IMM | ebpf::MOV64_IMM => {
+                let op2 = Some(OperandInfo {
+                    value: insn.imm as u64,
+                    source_reg: None,
+                    source_def: None,
+                    is_immediate: true,
+                });
+                (None, op2, Some(insn.imm))
+            }
+
+            // MOV register
+            ebpf::MOV32_REG | ebpf::MOV64_REG => {
+                let op2 = Some(OperandInfo {
+                    value: pre_regs[insn.src as usize],
+                    source_reg: Some(insn.src),
+                    source_def: src_def,
+                    is_immediate: false,
+                });
+                (None, op2, None)
+            }
+
+            // NEG (unary)
+            ebpf::NEG32 | ebpf::NEG64 => {
+                let op1 = Some(OperandInfo {
+                    value: pre_regs[insn.dst as usize],
+                    source_reg: Some(insn.dst),
+                    source_def: dst_def,
+                    is_immediate: false,
+                });
+                (op1, None, None)
+            }
+
+            // Load double-word immediate
+            ebpf::LD_DW_IMM => {
+                // The immediate is a 64-bit value split across two instructions
+                // We just capture what we can here
+                (None, None, Some(insn.imm))
+            }
+
+            // Memory loads: dst = [src + off]
+            ebpf::LD_B_REG | ebpf::LD_H_REG | ebpf::LD_W_REG | ebpf::LD_DW_REG |
+            ebpf::LD_1B_REG | ebpf::LD_2B_REG | ebpf::LD_4B_REG | ebpf::LD_8B_REG => {
+                // src register holds base address
+                let op1 = Some(OperandInfo {
+                    value: pre_regs[insn.src as usize],
+                    source_reg: Some(insn.src),
+                    source_def: src_def,
+                    is_immediate: false,
+                });
+                // offset is an immediate
+                (op1, None, Some(insn.off as i64))
+            }
+
+            // Memory stores: [dst + off] = src or imm
+            ebpf::ST_B_REG | ebpf::ST_H_REG | ebpf::ST_W_REG | ebpf::ST_DW_REG |
+            ebpf::ST_1B_REG | ebpf::ST_2B_REG | ebpf::ST_4B_REG | ebpf::ST_8B_REG => {
+                // dst register holds base address, src holds value
+                let op1 = Some(OperandInfo {
+                    value: pre_regs[insn.dst as usize],
+                    source_reg: Some(insn.dst),
+                    source_def: dst_def,
+                    is_immediate: false,
+                });
+                let op2 = Some(OperandInfo {
+                    value: pre_regs[insn.src as usize],
+                    source_reg: Some(insn.src),
+                    source_def: src_def,
+                    is_immediate: false,
+                });
+                (op1, op2, Some(insn.off as i64))
+            }
+
+            ebpf::ST_B_IMM | ebpf::ST_H_IMM | ebpf::ST_W_IMM | ebpf::ST_DW_IMM |
+            ebpf::ST_1B_IMM | ebpf::ST_2B_IMM | ebpf::ST_4B_IMM | ebpf::ST_8B_IMM => {
+                // dst register holds base address, imm is the value
+                let op1 = Some(OperandInfo {
+                    value: pre_regs[insn.dst as usize],
+                    source_reg: Some(insn.dst),
+                    source_def: dst_def,
+                    is_immediate: false,
+                });
+                let op2 = Some(OperandInfo {
+                    value: insn.imm as u64,
+                    source_reg: None,
+                    source_def: None,
+                    is_immediate: true,
+                });
+                (op1, op2, Some(insn.imm))
+            }
+
+            // For other instructions (jumps, calls, etc.), no operand extraction
+            _ => (None, None, None),
+        }
     }
 
     /// Record memory access event for load/store instructions.
