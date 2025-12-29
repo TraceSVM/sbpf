@@ -9,8 +9,8 @@
 //! - Separated sections that can be read independently
 
 use super::types::{
-    MemoryAccessEvent, MemoryAccessType, MemoryRegionType, RegisterChange, TraceContext,
-    TracedCallFrame, TraceEvent, TraceResult,
+    MemoryAccessEvent, MemoryAccessType, MemoryRegionType, OperandInfo, RegisterChange,
+    TraceContext, TracedCallFrame, TraceEvent, TraceResult,
 };
 use super::cfg::ControlFlowGraph;
 use super::dataflow::DataFlowState;
@@ -220,6 +220,8 @@ pub struct FunctionTrace {
 /// Simplified instruction for readability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimplifiedInstruction {
+    /// Global execution sequence number for strict ordering.
+    pub exec_seq: u64,
     /// Program counter.
     pub pc: u64,
     /// Disassembled mnemonic.
@@ -230,6 +232,15 @@ pub struct SimplifiedInstruction {
     /// Register changes with before/after values.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub register_changes: Vec<RegisterChange>,
+    /// First operand information (typically dst register value before execution).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operand_1: Option<OperandInfo>,
+    /// Second operand information (src register or immediate).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operand_2: Option<OperandInfo>,
+    /// Immediate value if present in instruction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub immediate: Option<i64>,
 }
 
 /// Memory access with semantic context.
@@ -394,10 +405,14 @@ impl QueryableTrace {
                     if include_instructions {
                         let semantic = Self::get_instruction_semantic(&insn.mnemonic);
                         instructions.push(SimplifiedInstruction {
+                            exec_seq: insn.exec_seq,
                             pc: insn.pc,
                             mnemonic: insn.mnemonic.clone(),
                             semantic,
                             register_changes: insn.register_changes.clone(),
+                            operand_1: insn.operand_1.clone(),
+                            operand_2: insn.operand_2.clone(),
+                            immediate: insn.immediate,
                         });
                     }
                 }

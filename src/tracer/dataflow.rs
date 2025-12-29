@@ -19,12 +19,21 @@ pub struct DefId {
     pub pc: u64,
     /// Sequence number for multiple definitions at same PC (e.g., loop iterations).
     pub seq: u64,
+    /// Global execution sequence number for strict ordering.
+    /// This is monotonically increasing within a program invocation.
+    #[serde(default)]
+    pub exec_seq: u64,
 }
 
 impl DefId {
     /// Create a new DefId.
     pub fn new(pc: u64, seq: u64) -> Self {
-        Self { pc, seq }
+        Self { pc, seq, exec_seq: 0 }
+    }
+
+    /// Create a new DefId with execution sequence.
+    pub fn with_exec_seq(pc: u64, seq: u64, exec_seq: u64) -> Self {
+        Self { pc, seq, exec_seq }
     }
 
     /// Special DefId for function entry parameters.
@@ -32,6 +41,7 @@ impl DefId {
         Self {
             pc: u64::MAX,
             seq: reg as u64,
+            exec_seq: 0,
         }
     }
 
@@ -46,7 +56,7 @@ impl std::fmt::Display for DefId {
         if self.is_entry_param() {
             write!(f, "entry:r{}", self.seq)
         } else {
-            write!(f, "{}:{}", self.pc, self.seq)
+            write!(f, "{}:{}@{}", self.pc, self.seq, self.exec_seq)
         }
     }
 }
@@ -180,6 +190,12 @@ pub struct ValueDefinition {
     pub taint: HashSet<TaintLabel>,
     /// Destination register or memory location.
     pub destination: ValueLocation,
+    /// Explicit operand definitions for traceability (DefIds of inputs).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub input_defs: Vec<DefId>,
+    /// For operations with immediate, record it explicitly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub immediate_operand: Option<i64>,
 }
 
 /// Where a value is stored.
@@ -223,6 +239,9 @@ pub enum UseType {
 pub struct MemoryStore {
     /// Definition ID of the store instruction.
     pub store_def: DefId,
+    /// Execution sequence for ordering stores.
+    #[serde(default)]
+    pub exec_seq: u64,
     /// Memory address written to.
     pub address: u64,
     /// Size of the store.
@@ -239,6 +258,9 @@ pub struct DataFlowState {
     /// Current sequence counter (for DefId generation).
     #[serde(skip)]
     pub sequence: u64,
+    /// Current execution sequence (passed from tracer).
+    #[serde(skip)]
+    pub current_exec_seq: u64,
     /// Current definition for each register (r0-r10).
     #[serde(skip)]
     pub register_defs: [Option<DefId>; 11],
@@ -362,12 +384,28 @@ where
 }
 
 /// Parse a DefId from its string representation.
+/// Supports formats: "entry:rN", "pc:seq", "pc:seq@exec_seq"
 fn parse_def_id(s: &str) -> Result<DefId, String> {
     if s.starts_with("entry:r") {
         let reg_str = &s[7..];
         let reg: u64 = reg_str.parse().map_err(|_| format!("Invalid entry param: {}", s))?;
         Ok(DefId::entry_param(reg as u8))
+    } else if s.contains('@') {
+        // New format: "pc:seq@exec_seq"
+        let at_pos = s.find('@').unwrap();
+        let pc_seq = &s[..at_pos];
+        let exec_seq_str = &s[at_pos + 1..];
+
+        let parts: Vec<&str> = pc_seq.split(':').collect();
+        if parts.len() != 2 {
+            return Err(format!("Invalid DefId format: {}", s));
+        }
+        let pc: u64 = parts[0].parse().map_err(|_| format!("Invalid pc in DefId: {}", s))?;
+        let seq: u64 = parts[1].parse().map_err(|_| format!("Invalid seq in DefId: {}", s))?;
+        let exec_seq: u64 = exec_seq_str.parse().map_err(|_| format!("Invalid exec_seq in DefId: {}", s))?;
+        Ok(DefId::with_exec_seq(pc, seq, exec_seq))
     } else {
+        // Legacy format: "pc:seq"
         let parts: Vec<&str> = s.split(':').collect();
         if parts.len() != 2 {
             return Err(format!("Invalid DefId format: {}", s));
@@ -397,6 +435,8 @@ impl DataFlowState {
                 origin: ValueOrigin::EntryParameter { register: reg },
                 taint,
                 destination: ValueLocation::Register { reg },
+                input_defs: Vec::new(),
+                immediate_operand: None,
             };
             self.definitions.insert(def_id, def);
             self.register_defs[reg as usize] = Some(def_id);
@@ -410,14 +450,21 @@ impl DataFlowState {
             origin: ValueOrigin::EntryParameter { register: 10 },
             taint: HashSet::new(),
             destination: ValueLocation::Register { reg: 10 },
+            input_defs: Vec::new(),
+            immediate_operand: None,
         };
         self.definitions.insert(r10_def_id, r10_def);
         self.register_defs[10] = Some(r10_def_id);
     }
 
-    /// Generate next DefId for given PC.
+    /// Set the current execution sequence (called by tracer).
+    pub fn set_exec_seq(&mut self, exec_seq: u64) {
+        self.current_exec_seq = exec_seq;
+    }
+
+    /// Generate next DefId for given PC, using current exec_seq.
     pub fn next_def_id(&mut self, pc: u64) -> DefId {
-        let def_id = DefId::new(pc, self.sequence);
+        let def_id = DefId::with_exec_seq(pc, self.sequence, self.current_exec_seq);
         self.sequence += 1;
         def_id
     }
@@ -437,6 +484,7 @@ impl DataFlowState {
             ValueLocation::Memory { address, size } => {
                 let store = MemoryStore {
                     store_def: def_id,
+                    exec_seq: self.current_exec_seq,
                     address: *address,
                     size: *size,
                     value_def: def_id,
@@ -518,6 +566,7 @@ impl DataFlowAnalyzer {
     /// Analyze an instruction and update data flow state.
     pub fn analyze_instruction(
         &mut self,
+        exec_seq: u64,
         pc: u64,
         opcode: u8,
         insn: &ebpf::Insn,
@@ -527,6 +576,9 @@ impl DataFlowAnalyzer {
         mem_address: Option<u64>,
         mem_size: Option<u64>,
     ) -> Option<ValueDefinition> {
+        // Set current exec_seq so DefIds and MemoryStores get the correct value
+        self.state.set_exec_seq(exec_seq);
+
         match opcode {
             // MOV immediate
             ebpf::MOV32_IMM | ebpf::MOV64_IMM => {
@@ -628,6 +680,8 @@ impl DataFlowAnalyzer {
             },
             taint: HashSet::from([TaintLabel::Constant]),
             destination: ValueLocation::Register { reg: insn.dst },
+            input_defs: Vec::new(),
+            immediate_operand: Some(insn.imm),
         };
 
         self.state.define_value(def.clone());
@@ -669,12 +723,15 @@ impl DataFlowAnalyzer {
             ValueOrigin::Unknown
         };
 
+        let input_defs = src_def.map(|d| vec![d]).unwrap_or_default();
         let def = ValueDefinition {
             def_id,
             value: Some(value),
             origin,
             taint,
             destination: ValueLocation::Register { reg: insn.dst },
+            input_defs,
+            immediate_operand: None,
         };
 
         self.state.define_value(def.clone());
@@ -711,10 +768,12 @@ impl DataFlowAnalyzer {
             value: Some(value),
             origin: ValueOrigin::Computed {
                 operation,
-                inputs,
+                inputs: inputs.clone(),
             },
             taint,
             destination: ValueLocation::Register { reg: insn.dst },
+            input_defs: inputs,
+            immediate_operand: Some(insn.imm),
         };
 
         self.state.define_value(def.clone());
@@ -759,10 +818,12 @@ impl DataFlowAnalyzer {
             value: Some(value),
             origin: ValueOrigin::Computed {
                 operation,
-                inputs,
+                inputs: inputs.clone(),
             },
             taint,
             destination: ValueLocation::Register { reg: insn.dst },
+            input_defs: inputs,
+            immediate_operand: None,
         };
 
         self.state.define_value(def.clone());
@@ -798,10 +859,12 @@ impl DataFlowAnalyzer {
             value: Some(value),
             origin: ValueOrigin::Computed {
                 operation,
-                inputs,
+                inputs: inputs.clone(),
             },
             taint,
             destination: ValueLocation::Register { reg: insn.dst },
+            input_defs: inputs,
+            immediate_operand: None,
         };
 
         self.state.define_value(def.clone());
@@ -835,10 +898,12 @@ impl DataFlowAnalyzer {
             value: Some(value),
             origin: ValueOrigin::Computed {
                 operation: OperationType::Endian,
-                inputs,
+                inputs: inputs.clone(),
             },
             taint,
             destination: ValueLocation::Register { reg: insn.dst },
+            input_defs: inputs,
+            immediate_operand: Some(insn.imm), // endianness size (16/32/64)
         };
 
         self.state.define_value(def.clone());
@@ -860,6 +925,8 @@ impl DataFlowAnalyzer {
             origin: ValueOrigin::Constant { value },
             taint: HashSet::from([TaintLabel::Constant]),
             destination: ValueLocation::Register { reg: insn.dst },
+            input_defs: Vec::new(),
+            immediate_operand: Some(value as i64),
         };
 
         self.state.define_value(def.clone());
@@ -906,6 +973,15 @@ impl DataFlowAnalyzer {
             HashSet::from([TaintLabel::MemoryInput { region }])
         };
 
+        // Collect input_defs - address register and optionally the store that provided the value
+        let mut input_defs = Vec::new();
+        if let Some(src_def_id) = src_def {
+            input_defs.push(src_def_id);
+        }
+        if let Some(store_def_id) = store_def {
+            input_defs.push(store_def_id);
+        }
+
         let def = ValueDefinition {
             def_id,
             value: Some(value),
@@ -916,6 +992,8 @@ impl DataFlowAnalyzer {
             },
             taint,
             destination: ValueLocation::Register { reg: insn.dst },
+            input_defs,
+            immediate_operand: Some(insn.off as i64), // memory offset
         };
 
         self.state.define_value(def.clone());
@@ -959,13 +1037,15 @@ impl DataFlowAnalyzer {
                 | ebpf::ST_8B_IMM
         );
 
-        let (origin, taint, value) = if is_imm_store {
+        let (origin, taint, value, input_defs, immediate_operand) = if is_imm_store {
             (
                 ValueOrigin::Constant {
                     value: insn.imm as u64,
                 },
                 HashSet::from([TaintLabel::Constant]),
                 Some(insn.imm as u64),
+                dst_def.map(|d| vec![d]).unwrap_or_default(), // address reg def
+                Some(insn.imm),
             )
         } else {
             let src_def = self.state.get_reg_def(insn.src);
@@ -982,6 +1062,11 @@ impl DataFlowAnalyzer {
                     .map(|d| d.taint.clone())
                     .unwrap_or_default();
                 let src_value = Some(pre_regs[insn.src as usize]);
+                let mut ids = Vec::new();
+                if let Some(d) = dst_def {
+                    ids.push(d); // address reg def
+                }
+                ids.push(src_def_id); // value reg def
                 (
                     ValueOrigin::RegisterCopy {
                         source_reg: insn.src,
@@ -989,9 +1074,11 @@ impl DataFlowAnalyzer {
                     },
                     src_taint,
                     src_value,
+                    ids,
+                    None,
                 )
             } else {
-                (ValueOrigin::Unknown, HashSet::new(), None)
+                (ValueOrigin::Unknown, HashSet::new(), None, dst_def.map(|d| vec![d]).unwrap_or_default(), None)
             }
         };
 
@@ -1001,6 +1088,8 @@ impl DataFlowAnalyzer {
             origin,
             taint,
             destination: ValueLocation::Memory { address, size },
+            input_defs,
+            immediate_operand,
         };
 
         self.state.define_value(def.clone());
@@ -1067,10 +1156,12 @@ impl DataFlowAnalyzer {
             value: Some(value),
             origin: ValueOrigin::SyscallReturn {
                 syscall_name: syscall_name.to_string(),
-                arg_defs,
+                arg_defs: arg_defs.clone(),
             },
             taint,
             destination: ValueLocation::Register { reg: 0 },
+            input_defs: arg_defs,
+            immediate_operand: None,
         };
 
         self.state.define_value(def.clone());
@@ -1106,9 +1197,11 @@ impl DataFlowAnalyzer {
         let def = ValueDefinition {
             def_id,
             value: Some(value),
-            origin: ValueOrigin::FunctionReturn { target_pc, arg_defs },
+            origin: ValueOrigin::FunctionReturn { target_pc, arg_defs: arg_defs.clone() },
             taint,
             destination: ValueLocation::Register { reg: 0 },
+            input_defs: arg_defs,
+            immediate_operand: None,
         };
 
         self.state.define_value(def.clone());
@@ -1185,6 +1278,8 @@ mod tests {
             origin: ValueOrigin::Constant { value: 10 },
             taint: HashSet::from([TaintLabel::InputArg { register: 1 }]),
             destination: ValueLocation::Register { reg: 0 },
+            input_defs: Vec::new(),
+            immediate_operand: None,
         };
         state.definitions.insert(def1.def_id, def1.clone());
 
@@ -1194,6 +1289,8 @@ mod tests {
             origin: ValueOrigin::Constant { value: 20 },
             taint: HashSet::from([TaintLabel::InputArg { register: 2 }]),
             destination: ValueLocation::Register { reg: 1 },
+            input_defs: Vec::new(),
+            immediate_operand: None,
         };
         state.definitions.insert(def2.def_id, def2.clone());
 
