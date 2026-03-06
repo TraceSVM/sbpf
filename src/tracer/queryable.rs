@@ -664,6 +664,7 @@ mod tests {
             text_section_vaddr: 0x100000000,
             control_flow_graph: None,
             dataflow: None,
+            input_accounts: Vec::new(),
         };
 
         let queryable = QueryableTrace::from_trace_context(&ctx);
