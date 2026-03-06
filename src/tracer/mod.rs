@@ -261,6 +261,7 @@ impl Tracer {
             text_section_vaddr,
             control_flow_graph,
             dataflow,
+            input_accounts: Vec::new(), // Populated by runtime after execution
         };
 
         // Extract program result

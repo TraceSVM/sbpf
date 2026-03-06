@@ -39,6 +39,30 @@ pub struct TraceContext {
     /// Data flow analysis state (if enabled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dataflow: Option<super::dataflow::DataFlowState>,
+    /// Account layout in the SBF input buffer (populated by the runtime).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_accounts: Vec<TraceAccountInfo>,
+}
+
+/// Describes one account in the SBF input buffer for trace annotation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceAccountInfo {
+    /// Account index in the input buffer.
+    pub index: usize,
+    /// Base58-encoded public key.
+    pub pubkey: String,
+    /// Base58-encoded owner program.
+    pub owner: String,
+    /// Virtual address where account data starts.
+    pub vm_data_addr: u64,
+    /// Length of account data in bytes.
+    pub data_len: u64,
+    /// Whether this is a duplicate of an earlier account.
+    pub is_duplicate: bool,
+    /// Whether the account is writable.
+    pub is_writable: bool,
+    /// Whether the account is a signer.
+    pub is_signer: bool,
 }
 
 /// Result of traced execution.
