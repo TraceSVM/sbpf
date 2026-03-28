@@ -499,6 +499,9 @@ pub struct DataFlowAnalyzer {
     pub state: DataFlowState,
     /// Whether to track all definitions or only tainted ones.
     pub track_all: bool,
+    /// Stack of saved callee-saved register definitions (r6-r9).
+    /// Pushed on function call, popped on function return.
+    callee_saved_stack: Vec<[Option<DefId>; 4]>,
 }
 
 impl DataFlowAnalyzer {
@@ -507,6 +510,7 @@ impl DataFlowAnalyzer {
         Self {
             state: DataFlowState::new(),
             track_all,
+            callee_saved_stack: Vec::new(),
         }
     }
 
@@ -1079,6 +1083,7 @@ impl DataFlowAnalyzer {
 
     /// Handle function call - record argument uses.
     pub fn handle_function_call(&mut self, pc: u64) {
+        // Record argument uses (r1-r5)
         for reg in 1..=5u8 {
             if let Some(def_id) = self.state.get_reg_def(reg) {
                 self.state.record_use(ValueUse {
@@ -1088,9 +1093,22 @@ impl DataFlowAnalyzer {
                 });
             }
         }
+
+        // Save callee-saved register definitions (r6-r9).
+        // The SBF calling convention preserves these across calls.
+        // On function return, we restore them so source_def edges
+        // remain valid after exit restores the register values.
+        let saved = [
+            self.state.get_reg_def(6),
+            self.state.get_reg_def(7),
+            self.state.get_reg_def(8),
+            self.state.get_reg_def(9),
+        ];
+        self.callee_saved_stack.push(saved);
     }
 
-    /// Handle function return - define r0 with return value.
+    /// Handle function return - define r0 with return value and restore
+    /// callee-saved register definitions (r6-r9).
     pub fn handle_function_return(
         &mut self,
         pc: u64,
@@ -1098,6 +1116,7 @@ impl DataFlowAnalyzer {
         post_regs: &[u64; 12],
         arg_defs: Vec<DefId>,
     ) -> Option<ValueDefinition> {
+        // Define r0 with function return value
         let def_id = self.state.next_def_id(pc);
         let value = post_regs[0];
 
@@ -1112,6 +1131,20 @@ impl DataFlowAnalyzer {
         };
 
         self.state.define_value(def.clone());
+
+        // Restore callee-saved register definitions (r6-r9).
+        // After exit, these registers hold their pre-call values, so
+        // the dataflow edges should point back to where those values
+        // were originally defined (before the call).
+        if let Some(saved) = self.callee_saved_stack.pop() {
+            for (i, saved_def) in saved.iter().enumerate() {
+                let reg = (i + 6) as u8; // r6, r7, r8, r9
+                if let Some(def_id) = saved_def {
+                    self.state.register_defs[reg as usize] = Some(*def_id);
+                }
+            }
+        }
+
         Some(def)
     }
 
