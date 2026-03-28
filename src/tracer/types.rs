@@ -39,6 +39,30 @@ pub struct TraceContext {
     /// Data flow analysis state (if enabled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dataflow: Option<super::dataflow::DataFlowState>,
+    /// Account layout in the SBF input buffer (populated by the runtime).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_accounts: Vec<TraceAccountInfo>,
+}
+
+/// Describes one account in the SBF input buffer for trace annotation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceAccountInfo {
+    /// Account index in the input buffer.
+    pub index: usize,
+    /// Base58-encoded public key.
+    pub pubkey: String,
+    /// Base58-encoded owner program.
+    pub owner: String,
+    /// Virtual address where account data starts.
+    pub vm_data_addr: u64,
+    /// Length of account data in bytes.
+    pub data_len: u64,
+    /// Whether this is a duplicate of an earlier account.
+    pub is_duplicate: bool,
+    /// Whether the account is writable.
+    pub is_writable: bool,
+    /// Whether the account is a signer.
+    pub is_signer: bool,
 }
 
 /// Result of traced execution.
@@ -108,9 +132,28 @@ pub enum TraceEvent {
     FunctionReturn(FunctionReturnEvent),
 }
 
+/// Information about an operand to an instruction.
+/// Used for explicit dataflow tracing without lossy reconstruction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperandInfo {
+    /// The operand value at time of instruction execution.
+    pub value: u64,
+    /// Source register number (None if immediate).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_reg: Option<u8>,
+    /// DefId that produced this value (if register and dataflow enabled).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_def: Option<super::dataflow::DefId>,
+    /// Whether this operand is an immediate value.
+    pub is_immediate: bool,
+}
+
 /// Instruction execution details.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstructionEvent {
+    /// Execution sequence number within this program invocation.
+    /// Monotonically increasing, resets on CPI calls.
+    pub exec_seq: u64,
     /// Program counter.
     pub pc: u64,
     /// Raw opcode byte.
@@ -123,6 +166,15 @@ pub struct InstructionEvent {
     pub register_changes: Vec<RegisterChange>,
     /// Compute units consumed by this instruction.
     pub compute_units: u64,
+    /// First operand information (typically dst register value before execution).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operand_1: Option<OperandInfo>,
+    /// Second operand information (src register or immediate).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operand_2: Option<OperandInfo>,
+    /// Immediate value if present in instruction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub immediate: Option<i64>,
 }
 
 /// Memory region classification for semantic understanding.
