@@ -445,16 +445,16 @@ impl Tracer {
     }
 
     /// Compute register differences with before/after values.
+    /// Always includes ALL registers so backward tracing can identify the
+    /// destination register even for identity ops (e.g. `add r9, 0`).
     fn compute_reg_diff(&self, pre: &[u64; 12], post: &[u64; 12]) -> Vec<RegisterChange> {
         let mut changes = Vec::new();
         for i in 0..12 {
-            if pre[i] != post[i] {
-                changes.push(RegisterChange {
-                    register: i as u8,
-                    value_before: pre[i],
-                    value_after: post[i],
-                });
-            }
+            changes.push(RegisterChange {
+                register: i as u8,
+                value_before: pre[i],
+                value_after: post[i],
+            });
         }
         changes
     }
@@ -662,6 +662,8 @@ mod tests {
         let changes = tracer.compute_reg_diff(&pre, &post);
         assert!(changes.iter().any(|rc| rc.register == 0 && rc.value_before == 0 && rc.value_after == 42));
         assert!(changes.iter().any(|rc| rc.register == 5 && rc.value_before == 0 && rc.value_after == 100));
-        assert!(!changes.iter().any(|rc| rc.register == 1)); // unchanged
+        // All registers are now included (even unchanged) for clean backward tracing
+        assert!(changes.iter().any(|rc| rc.register == 1 && rc.value_before == 0 && rc.value_after == 0));
+        assert_eq!(changes.len(), 12); // all 12 registers
     }
 }
