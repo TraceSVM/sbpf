@@ -435,11 +435,23 @@ impl Tracer {
                 current_frame.events.push(TraceEvent::FunctionCall(call_event));
             }
 
+            // Save callee-saved register defs in dataflow analyzer
+            if let Some(ref mut analyzer) = self.dataflow_analyzer {
+                analyzer.handle_function_call(pc);
+            }
+
             // Push new frame for the callee
             self.frame_stack
                 .push(TracedCallFrame::new(symbol, target_pc, new_depth));
         } else if is_exit && post_call_depth < pre_call_depth {
             // Frame was popped (return from function)
+
+            // Restore callee-saved register defs in dataflow analyzer
+            if let Some(ref mut analyzer) = self.dataflow_analyzer {
+                let target_pc = post_regs[11];
+                analyzer.handle_function_return(pc, target_pc, &post_regs, Vec::new());
+            }
+
             if let Some(frame) = self.frame_stack.pop() {
                 // Record function return event
                 let return_event = FunctionReturnEvent {
