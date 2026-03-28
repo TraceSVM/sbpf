@@ -653,6 +653,20 @@ impl Tracer {
                 (op1, op2, Some(insn.imm))
             }
 
+            // EXIT: include r0 (return value) with its source_def so backward
+            // tracing can follow the return value through exit instructions.
+            ebpf::EXIT => {
+                let r0_def = self.dataflow_analyzer.as_ref()
+                    .and_then(|a| a.state.get_reg_def(0));
+                let op1 = Some(OperandInfo {
+                    value: pre_regs[0],
+                    source_reg: Some(0),
+                    source_def: r0_def,
+                    is_immediate: false,
+                });
+                (op1, None, None)
+            }
+
             // For other instructions (jumps, calls, etc.), no operand extraction
             _ => (None, None, None),
         }
